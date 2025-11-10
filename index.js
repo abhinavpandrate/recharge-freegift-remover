@@ -5,36 +5,37 @@ import fetch from "node-fetch";
 const app = express();
 app.use(bodyParser.json());
 
-const API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your admin token
+const API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your Recharge admin token
 const CAP_ID = 56519341375870; // Replace with your variant IDs
 const BOTTLE_ID = 15659113480574;
 
-// Helper: Check if subscription has previous orders
+// Helper: Check if this is the first subscription order
 async function isFirstOrder(subscriptionId) {
   const response = await fetch(`https://api.rechargeapps.com/subscriptions/${subscriptionId}/orders`, {
     headers: { "X-Recharge-Access-Token": API_KEY },
   });
   const data = await response.json();
-  return data.orders.length <= 1; // First order = only 1 order exists
+  return data.orders.length <= 1; // Only 1 order exists = first order
 }
 
 app.post("/recharge-webhook", async (req, res) => {
   try {
     const order = req.body;
     const subscriptionId = order.subscription_id;
+    const orderId = order.id;
 
-    if (!subscriptionId) {
+    if (!subscriptionId || !orderId) {
       return res.status(200).send("Not a subscription order");
     }
 
-    // Check if this is the first order
+    // Check if first order
     const firstOrder = await isFirstOrder(subscriptionId);
     if (firstOrder) {
       console.log(`Subscription ${subscriptionId} - first order, gift stays`);
       return res.status(200).send("First order - gift stays");
     }
 
-    // Remove free gifts if present
+    // Remove free gifts from this order
     const updatedLineItems = order.line_items
       .filter(item => item.variant_id !== CAP_ID && item.variant_id !== BOTTLE_ID)
       .map(item => ({ id: item.id, quantity: item.quantity }));
@@ -44,7 +45,8 @@ app.post("/recharge-webhook", async (req, res) => {
       return res.status(200).send("No free gifts to remove");
     }
 
-    const updateResponse = await fetch(`https://api.rechargeapps.com/subscriptions/${subscriptionId}`, {
+    // Update the **order itself**, not the subscription
+    const updateResponse = await fetch(`https://api.rechargeapps.com/orders/${orderId}`, {
       method: "PUT",
       headers: {
         "X-Recharge-Access-Token": API_KEY,
@@ -54,9 +56,9 @@ app.post("/recharge-webhook", async (req, res) => {
     });
 
     const result = await updateResponse.json();
-    console.log("Updated subscription:", result);
+    console.log("Updated order:", result);
 
-    res.status(200).send("Free gift removed from subscription");
+    res.status(200).send("Free gift removed from subscription order");
   } catch (error) {
     console.error("Error processing webhook:", error);
     res.status(500).send("Error processing webhook");
