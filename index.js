@@ -6,16 +6,16 @@ const app = express();
 app.use(bodyParser.json());
 
 const API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your Recharge admin token
-const CAP_ID = 56519341375870; // Replace with your variant IDs
-const BOTTLE_ID = 15659113480574;
+const CAP_ID = 56519341375870; // Variant ID of the cap gift
+const BOTTLE_ID = 15659113480574; // Variant ID of the bottle gift
 
-// Helper: Check if this is the first subscription order
+// Check if subscription is on its first order
 async function isFirstOrder(subscriptionId) {
   const response = await fetch(`https://api.rechargeapps.com/subscriptions/${subscriptionId}/orders`, {
     headers: { "X-Recharge-Access-Token": API_KEY },
   });
   const data = await response.json();
-  return data.orders.length <= 1; // Only 1 order exists = first order
+  return data.orders.length <= 1; // first order = only 1 order exists
 }
 
 app.post("/recharge-webhook", async (req, res) => {
@@ -28,37 +28,38 @@ app.post("/recharge-webhook", async (req, res) => {
       return res.status(200).send("Not a subscription order");
     }
 
-    // Check if first order
+    // If first order, keep gifts
     const firstOrder = await isFirstOrder(subscriptionId);
     if (firstOrder) {
-      console.log(`Subscription ${subscriptionId} - first order, gift stays`);
-      return res.status(200).send("First order - gift stays");
+      console.log(`Subscription ${subscriptionId} - first order, gifts stay`);
+      return res.status(200).send("First order - gifts stay");
     }
 
-    // Remove free gifts from this order
-    const updatedLineItems = order.line_items
-      .filter(item => item.variant_id !== CAP_ID && item.variant_id !== BOTTLE_ID)
-      .map(item => ({ id: item.id, quantity: item.quantity }));
+    // Find all gift line items in this order
+    const giftItems = order.line_items.filter(
+      item => item.variant_id === CAP_ID || item.variant_id === BOTTLE_ID
+    );
 
-    if (updatedLineItems.length === order.line_items.length) {
-      console.log(`Subscription ${subscriptionId} - no free gifts to remove`);
-      return res.status(200).send("No free gifts to remove");
+    if (giftItems.length === 0) {
+      console.log(`Subscription ${subscriptionId} - no gifts to remove`);
+      return res.status(200).send("No gifts to remove");
     }
 
-    // Update the **order itself**, not the subscription
-    const updateResponse = await fetch(`https://api.rechargeapps.com/orders/${orderId}`, {
-      method: "PUT",
-      headers: {
-        "X-Recharge-Access-Token": API_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ line_items: updatedLineItems }),
-    });
+    // Delete each gift line item
+    for (const item of giftItems) {
+      const deleteResponse = await fetch(`https://api.rechargeapps.com/order_line_items/${item.id}`, {
+        method: "DELETE",
+        headers: { "X-Recharge-Access-Token": API_KEY },
+      });
 
-    const result = await updateResponse.json();
-    console.log("Updated order:", result);
+      if (!deleteResponse.ok) {
+        console.error(`Failed to delete line item ${item.id}`);
+      } else {
+        console.log(`Deleted line item ${item.id} from order ${orderId}`);
+      }
+    }
 
-    res.status(200).send("Free gift removed from subscription order");
+    res.status(200).send("Gifts removed from subscription order");
   } catch (error) {
     console.error("Error processing webhook:", error);
     res.status(500).send("Error processing webhook");
