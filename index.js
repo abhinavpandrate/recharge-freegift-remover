@@ -1,98 +1,91 @@
-// index.js
-import express from "express";
-import fetch from "node-fetch";
+import express from 'express';
+import bodyParser from 'body-parser';
+import fetch from 'node-fetch';
 
 const app = express();
-app.use(express.json());
+app.use(bodyParser.json());
 
-// --- CONFIGURATION ---
-const RECHARGE_API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your actual Recharge API key
 const PORT = process.env.PORT || 3000;
+const RECHARGE_API_KEY = 'sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc';
 
-// Define your gift product
-const GIFT_PRODUCT = {
-  shopify_product_id: 15659115839870,
-  shopify_variant_id: 56519341375870,
-  sku: "Styrkr_Cycling_Cap_x1"
-};
+const FREE_GIFT_VARIANT_ID = 56519341375870; // BYOB Cycling Cap variant ID
 
-// --- UTILITY FUNCTIONS ---
-
-// Fetch upcoming queued orders for a subscription
-async function getUpcomingOrders(subscription_id) {
-  const res = await fetch(`https://api.rechargeapps.com/subscriptions/${subscription_id}/upcoming_charges`, {
-    headers: {
-      "X-Recharge-Access-Token": RECHARGE_API_KEY,
-      "Content-Type": "application/json",
-    },
-  });
-
-  if (!res.ok) {
-    console.error("Error fetching upcoming orders:", await res.text());
-    return [];
-  }
-  const data = await res.json();
-  return data.upcoming_charges || [];
-}
-
-// Remove gift from a queued order
-async function removeGiftFromOrder(order_id) {
-  const payload = {
-    line_items: [
-      // Remove any line item with our gift variant ID
-      { shopify_variant_id: GIFT_PRODUCT.shopify_variant_id, quantity: 0 }
-    ]
-  };
-
-  const res = await fetch(`https://api.rechargeapps.com/orders/${order_id}`, {
-    method: "PUT",
-    headers: {
-      "X-Recharge-Access-Token": RECHARGE_API_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await res.json();
-  if (data.errors) {
-    console.error(`Failed to remove gift from order ${order_id}:`, data.errors);
-  } else {
-    console.log(`Gift removed from order ${order_id}`);
-  }
-}
-
-// --- WEBHOOK HANDLER ---
-app.post("/webhook", async (req, res) => {
-  const { subscription, order } = req.body;
-
-  if (!subscription) {
-    console.log("No subscription found in payload.");
-    return res.status(400).send("No subscription data");
-  }
-
-  // Check if this is the first order
-  const isFirstOrder = !subscription.has_previous_orders;
-  if (isFirstOrder) {
-    console.log(`First order for subscription ${subscription.id}. Gift can stay.`);
-  } else {
-    console.log(`Subscription ${subscription.id} - checking upcoming orders to remove gift.`);
-
-    // Get upcoming orders
-    const upcomingOrders = await getUpcomingOrders(subscription.id);
-
-    for (const upOrder of upcomingOrders) {
-      if (upOrder.status === "QUEUED") {
-        await removeGiftFromOrder(upOrder.id);
-      } else {
-        console.log(`Skipping order ${upOrder.id}, status: ${upOrder.status}`);
+// Helper to remove free gift from upcoming draft orders
+async function removeGiftFromUpcoming(subscriptionId) {
+  try {
+    // Fetch upcoming draft orders for this subscription
+    const res = await fetch(`https://api.rechargeapps.com/subscriptions/${subscriptionId}/upcoming_charges`, {
+      headers: {
+        'X-Recharge-Access-Token': RECHARGE_API_KEY,
+        'Content-Type': 'application/json'
       }
+    });
+
+    const data = await res.json();
+
+    if (!data.upcoming_charges || data.upcoming_charges.length === 0) {
+      console.log(`No upcoming charges found for subscription ${subscriptionId}`);
+      return;
     }
+
+    for (const charge of data.upcoming_charges) {
+      if (charge.status !== 'QUEUED') {
+        console.log(`Charge ${charge.id} is already processed, skipping.`);
+        continue;
+      }
+
+      // Remove free gift from line items if present
+      const updatedLineItems = (charge.line_items || []).filter(
+        item => item.shopify_variant_id !== FREE_GIFT_VARIANT_ID
+      );
+
+      if (updatedLineItems.length === (charge.line_items || []).length) {
+        console.log(`No free gift found in upcoming order ${charge.id}`);
+        continue;
+      }
+
+      const updateRes = await fetch(`https://api.rechargeapps.com/orders/${charge.id}`, {
+        method: 'PUT',
+        headers: {
+          'X-Recharge-Access-Token': RECHARGE_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ line_items: updatedLineItems })
+      });
+
+      const updateData = await updateRes.json();
+      console.log(`Free gift removed from upcoming order ${charge.id}:`, updateData);
+    }
+  } catch (err) {
+    console.error('Error removing gift:', err);
+  }
+}
+
+app.post('/webhook', async (req, res) => {
+  const payload = req.body;
+
+  console.log('Webhook payload received:', JSON.stringify(payload, null, 2));
+
+  // Try to get subscription ID
+  const subscriptionId = payload.subscription?.id || payload.order?.subscription_id;
+
+  if (!subscriptionId) {
+    console.log('No subscription ID found in payload.');
+    return res.status(400).send('No subscription ID');
   }
 
-  res.status(200).send("Webhook processed");
+  // Check if this is first order
+  if (payload.subscription?.first_charge_date === payload.order?.processed_at) {
+    console.log(`First order for subscription ${subscriptionId}. Gift can stay.`);
+    return res.status(200).send('First order, gift kept.');
+  }
+
+  // Remove gift from upcoming draft orders
+  await removeGiftFromUpcoming(subscriptionId);
+
+  res.status(200).send('Webhook processed');
 });
 
-// --- START SERVER ---
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
