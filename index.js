@@ -7,7 +7,7 @@ const app = express();
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 3000;
-const RECHARGE_API_KEY = "fake_key_here"; // Replace with your actual Recharge API key
+const RECHARGE_API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your actual Recharge API key
 const FREE_GIFT_SKU = "Styrkr_Cycling_Cap_x1";
 
 app.post("/webhook", async (req, res) => {
