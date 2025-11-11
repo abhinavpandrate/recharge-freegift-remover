@@ -1,77 +1,66 @@
 import express from "express";
 import bodyParser from "body-parser";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(bodyParser.json());
 
-// ⚠️ REPLACE THIS with your actual Recharge Admin API key
-const API_KEY = process.env.RECHARGE_TOKEN || "sk_2x2_f3e897b9f4560f00457cade62802a795c27e649b4bd453939c2d0712c94bebb9"; 
+// --- CONFIG --- //
+const API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your actual Recharge Admin API token
+const CAP_ID = 56519341375870;           // Replace with your free gift CAP variant ID
+const BOTTLE_ID = 15659113480574;        // Replace with your free gift BOTTLE variant ID
 
-// Hardcoded product variant IDs
-const CAP_ID = 56519341375870; // Cap gift
-const BOTTLE_ID = 15659113480574; // Bottle gift
+// In-memory store to track first orders
+const firstOrderGiven = {};
 
-if (!API_KEY || API_KEY === "sk_test_1234567890abcdef") {
-  console.error("⚠️ ERROR: Missing or placeholder RECHARGE_TOKEN environment variable!");
-  process.exit(1);
-}
-
-// Helper: Check if this is the first subscription order
-async function isFirstOrder(subscriptionId) {
-  const response = await fetch(`https://api.rechargeapps.com/subscriptions/${subscriptionId}/orders`, {
-    headers: { "X-Recharge-Access-Token": API_KEY },
-  });
-  const data = await response.json();
-  return data.orders.length <= 1; // first order = only 1 order exists
-}
-
-app.post("/recharge-webhook", async (req, res) => {
+// --- WEBHOOK ENDPOINT --- //
+app.post("/webhook", async (req, res) => {
   try {
-    const order = req.body;
-    const subscriptionId = order.subscription_id;
-    const orderId = order.id;
+    console.log("Webhook payload received:", JSON.stringify(req.body, null, 2));
 
-    if (!subscriptionId || !orderId) {
+    const payload = req.body;
+    const subscriptionId = payload.subscription_id;
+
+    if (!subscriptionId) {
+      console.log("Not a subscription order. Ignoring.");
       return res.status(200).send("Not a subscription order");
     }
 
     // First order? Keep gifts
-    const firstOrder = await isFirstOrder(subscriptionId);
-    if (firstOrder) {
+    if (!firstOrderGiven[subscriptionId]) {
+      firstOrderGiven[subscriptionId] = true;
       console.log(`Subscription ${subscriptionId} - first order, gifts stay`);
       return res.status(200).send("First order - gifts stay");
     }
 
-    // Find gift items in this order
-    const giftItems = order.line_items.filter(
-      item => item.variant_id === CAP_ID || item.variant_id === BOTTLE_ID
+    // Remove free gift items from renewals
+    const updatedLineItems = payload.line_items.filter(
+      item => item.variant_id !== CAP_ID && item.variant_id !== BOTTLE_ID
     );
 
-    if (giftItems.length === 0) {
+    if (updatedLineItems.length === payload.line_items.length) {
       console.log(`Subscription ${subscriptionId} - no gifts to remove`);
       return res.status(200).send("No gifts to remove");
     }
 
-    // Delete each gift line item
-    for (const item of giftItems) {
-      const deleteResponse = await fetch(`https://api.rechargeapps.com/order_line_items/${item.id}`, {
-        method: "DELETE",
-        headers: { "X-Recharge-Access-Token": API_KEY },
-      });
+    // Update the subscription on Recharge
+    await fetch(`https://api.rechargeapps.com/subscriptions/${subscriptionId}`, {
+      method: "PUT",
+      headers: {
+        "X-Recharge-Access-Token": API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ line_items: updatedLineItems }),
+    });
 
-      if (!deleteResponse.ok) {
-        console.error(`Failed to delete line item ${item.id}`);
-      } else {
-        console.log(`Deleted line item ${item.id} from order ${orderId}`);
-      }
-    }
-
-    res.status(200).send("Gifts removed from subscription order");
+    console.log(`Free gifts removed from subscription ${subscriptionId}`);
+    res.status(200).send("Free gifts removed");
   } catch (error) {
     console.error("Error processing webhook:", error);
     res.status(500).send("Error processing webhook");
   }
 });
 
+// --- START SERVER --- //
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Webhook listening on port ${PORT}`));
