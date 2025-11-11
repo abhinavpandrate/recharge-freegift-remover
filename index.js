@@ -6,7 +6,7 @@ const app = express();
 app.use(bodyParser.json());
 
 // Replace with your actual IDs
-const API_KEY = "YOUR_RANDOM_API_KEY"; // <-- replace with your Recharge admin token
+const API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // <-- replace with your Recharge admin token
 const CAP_ID = 56519341375870;        // Shopify variant ID for the cap
 const BOTTLE_ID = 15659113480574;     // Shopify variant ID for the bottle
 
