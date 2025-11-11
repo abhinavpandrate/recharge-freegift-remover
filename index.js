@@ -6,7 +6,7 @@ const app = express();
 app.use(bodyParser.json());
 
 // --- CONFIG --- //
-const API_KEY = "RECHARGE_API_KEY_12345"; // Replace with your Recharge Admin API token
+const API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your Recharge Admin API token
 const CAP_ID = 56519341375870;            // Replace with your free gift CAP variant ID
 const BOTTLE_ID = 15659113480574;         // Replace with your free gift BOTTLE variant ID
 
