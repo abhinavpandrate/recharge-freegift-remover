@@ -1,114 +1,79 @@
+// index.js
 import express from "express";
 import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
 
-const RECHARGE_API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // <-- replace with real key
-const FREE_GIFT_VARIANT_ID = "56519341375870"; // BYOB Cycling Cap variant
+// ---- CONFIG ----
+const PORT = process.env.PORT || 3000;
+const RECHARGE_API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // replace with your Recharge API key
+const FREE_GIFT_SKU = "Styrkr_Cycling_Cap_x1"; // SKU of the free gift
 
-// Helper to get upcoming orders for a subscription
-async function getUpcomingOrders(subscriptionId) {
-  const res = await fetch(
-    `https://api.rechargeapps.com/subscriptions/${subscriptionId}/upcoming_charges`,
-    {
-      method: "GET",
-      headers: {
-        "X-Recharge-Access-Token": RECHARGE_API_KEY,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-  if (!res.ok) {
-    console.error("Error fetching upcoming charges:", res.status, await res.text());
-    return [];
+// ---- HELPER ----
+async function removeFreeGift(orderId, lineItems) {
+  // Filter out the free gift
+  const updatedLineItems = lineItems.filter(item => item.sku !== FREE_GIFT_SKU);
+
+  if (updatedLineItems.length === lineItems.length) {
+    console.log(`No free gift found on order ${orderId}`);
+    return;
   }
-  const data = await res.json();
-  return data.upcoming_charges || [];
-}
 
-// Helper to remove free gift from a draft/queued order
-async function removeGiftFromOrder(orderId) {
   try {
-    const body = {
-      line_items: [
-        {
-          remove_variant_ids: [FREE_GIFT_VARIANT_ID],
-        },
-      ],
-    };
     const res = await fetch(`https://api.rechargeapps.com/orders/${orderId}`, {
       method: "PUT",
       headers: {
         "X-Recharge-Access-Token": RECHARGE_API_KEY,
-        "Content-Type": "application/json",
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ line_items: updatedLineItems })
     });
+
     const data = await res.json();
     if (data.errors) {
-      console.error("Failed to remove gift:", data.errors);
+      console.error(`Failed to remove gift from order ${orderId}:`, data.errors);
     } else {
-      console.log(`Gift removed from order ${orderId}:`, data);
+      console.log(`Free gift removed from order ${orderId}`);
     }
   } catch (err) {
-    console.error("Error removing gift:", err);
+    console.error(`Error updating order ${orderId}:`, err);
   }
 }
 
-// Main webhook handler
+// ---- WEBHOOK LISTENER ----
 app.post("/webhook", async (req, res) => {
   const payload = req.body;
-  console.log("Webhook payload received:", JSON.stringify(payload, null, 2));
+  const order = payload.order;
 
-  const subscription = payload.subscription;
-  if (!subscription || !subscription.id) {
-    console.log("No subscription ID found in payload.");
-    return res.status(400).send("No subscription found");
+  if (!order || !order.line_items) {
+    console.log("No order or line items found in payload.");
+    return res.status(200).send("No line items to process.");
   }
 
-  const subscriptionId = subscription.id;
+  const subscriptionId = order.line_items.find(item => item.subscription_id)?.subscription_id;
 
-  // For first-time subscriptions, gift stays
-  if (subscription.has_queued_charges === 0) {
+  if (!subscriptionId) {
+    console.log("No subscription ID found in order payload. Skipping gift removal.");
+    return res.status(200).send("No subscription found.");
+  }
+
+  // Check if this is the first order for this subscription
+  // Assuming you have a way to track first orders, otherwise remove this logic
+  const isFirstOrder = payload.is_first_order || false;
+
+  if (isFirstOrder) {
     console.log(`First order for subscription ${subscriptionId}. Gift can stay.`);
-    return res.send("First order, gift kept");
+    return res.status(200).send("First order, gift kept.");
   }
 
-  // Get upcoming orders
-  const upcomingOrders = await getUpcomingOrders(subscriptionId);
-  if (!upcomingOrders || upcomingOrders.length === 0) {
-    console.log(`No upcoming orders found for subscription ${subscriptionId}`);
-    return res.send("No upcoming orders");
-  }
+  // Remove the free gift from subsequent orders
+  await removeFreeGift(order.id, order.line_items);
 
-  for (const order of upcomingOrders) {
-    if (order.status === "DRAFT" || order.status === "QUEUED") {
-      // Detect gift line item inside bundles
-      const giftLine = order.line_items?.find((item) => {
-        if (!item) return false;
-        if (item.shopify_variant_id == FREE_GIFT_VARIANT_ID) return true;
-        // Check bundle properties
-        const isBundleGift = item.properties?.some(
-          (p) => p.name === "_rc_bundle_variant" && p.value == FREE_GIFT_VARIANT_ID
-        );
-        return isBundleGift;
-      });
-
-      if (giftLine) {
-        console.log(`Removing gift from order ${order.id}`);
-        await removeGiftFromOrder(order.id);
-      } else {
-        console.log(`No gift found in order ${order.id}`);
-      }
-    }
-  }
-
-  res.send("Webhook processed");
+  res.status(200).send("Webhook processed.");
 });
 
-// Start server
-const PORT = process.env.PORT || 3000;
+// ---- START SERVER ----
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
