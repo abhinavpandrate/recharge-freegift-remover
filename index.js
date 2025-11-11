@@ -1,79 +1,98 @@
+// index.js
 import express from "express";
-import bodyParser from "body-parser";
 import fetch from "node-fetch";
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
+// --- CONFIGURATION ---
+const RECHARGE_API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your actual Recharge API key
 const PORT = process.env.PORT || 3000;
 
-// === Recharge API key ===
-const RECHARGE_API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc";
+// Define your gift product
+const GIFT_PRODUCT = {
+  shopify_product_id: 15659115839870,
+  shopify_variant_id: 56519341375870,
+  sku: "Styrkr_Cycling_Cap_x1"
+};
 
-// The variant ID or SKU of your free gift
-const FREE_GIFT_SKU = "Styrkr_Cycling_Cap_x1";
-const FREE_GIFT_VARIANT_ID = 56519341375870;
+// --- UTILITY FUNCTIONS ---
 
-// Helper function to update an upcoming order
-async function removeGiftFromOrder(orderId, lineItemsToKeep) {
-  const url = `https://api.rechargeapps.com/orders/${orderId}`;
-  const payload = { line_items: lineItemsToKeep };
+// Fetch upcoming queued orders for a subscription
+async function getUpcomingOrders(subscription_id) {
+  const res = await fetch(`https://api.rechargeapps.com/subscriptions/${subscription_id}/upcoming_charges`, {
+    headers: {
+      "X-Recharge-Access-Token": RECHARGE_API_KEY,
+      "Content-Type": "application/json",
+    },
+  });
 
-  const res = await fetch(url, {
+  if (!res.ok) {
+    console.error("Error fetching upcoming orders:", await res.text());
+    return [];
+  }
+  const data = await res.json();
+  return data.upcoming_charges || [];
+}
+
+// Remove gift from a queued order
+async function removeGiftFromOrder(order_id) {
+  const payload = {
+    line_items: [
+      // Remove any line item with our gift variant ID
+      { shopify_variant_id: GIFT_PRODUCT.shopify_variant_id, quantity: 0 }
+    ]
+  };
+
+  const res = await fetch(`https://api.rechargeapps.com/orders/${order_id}`, {
     method: "PUT",
     headers: {
+      "X-Recharge-Access-Token": RECHARGE_API_KEY,
       "Content-Type": "application/json",
-      "X-Recharge-Access-Token": RECHARGE_API_KEY
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
 
   const data = await res.json();
-  return data;
+  if (data.errors) {
+    console.error(`Failed to remove gift from order ${order_id}:`, data.errors);
+  } else {
+    console.log(`Gift removed from order ${order_id}`);
+  }
 }
 
-// Webhook endpoint
+// --- WEBHOOK HANDLER ---
 app.post("/webhook", async (req, res) => {
-  const payload = req.body;
+  const { subscription, order } = req.body;
 
-  console.log("Webhook payload received:", JSON.stringify(payload, null, 2));
-
-  const order = payload.order;
-  if (!order || !order.line_items) {
-    console.log("No order or line items found.");
-    return res.status(200).send("No order data");
+  if (!subscription) {
+    console.log("No subscription found in payload.");
+    return res.status(400).send("No subscription data");
   }
 
-  // Check if the free gift exists
-  const giftPresent = order.line_items.some(
-    (item) =>
-      item.sku === FREE_GIFT_SKU || item.shopify_variant_id === FREE_GIFT_VARIANT_ID
-  );
+  // Check if this is the first order
+  const isFirstOrder = !subscription.has_previous_orders;
+  if (isFirstOrder) {
+    console.log(`First order for subscription ${subscription.id}. Gift can stay.`);
+  } else {
+    console.log(`Subscription ${subscription.id} - checking upcoming orders to remove gift.`);
 
-  if (!giftPresent) {
-    console.log(`Subscription ${order.subscription_id || order.id} - no free gift present.`);
-    return res.status(200).send("No gift to remove");
+    // Get upcoming orders
+    const upcomingOrders = await getUpcomingOrders(subscription.id);
+
+    for (const upOrder of upcomingOrders) {
+      if (upOrder.status === "QUEUED") {
+        await removeGiftFromOrder(upOrder.id);
+      } else {
+        console.log(`Skipping order ${upOrder.id}, status: ${upOrder.status}`);
+      }
+    }
   }
 
-  // Prepare line items to keep
-  const lineItemsToKeep = order.line_items.filter(
-    (item) =>
-      item.sku !== FREE_GIFT_SKU && item.shopify_variant_id !== FREE_GIFT_VARIANT_ID
-  ).map((item) => ({
-    shopify_variant_id: item.shopify_variant_id,
-    quantity: item.quantity
-  }));
-
-  try {
-    const updatedOrder = await removeGiftFromOrder(order.id, lineItemsToKeep);
-    console.log(`Free gift removed from order ${order.id}:`, updatedOrder);
-    res.status(200).send("Gift removed successfully");
-  } catch (error) {
-    console.error("Error updating order:", error);
-    res.status(500).send("Failed to remove gift");
-  }
+  res.status(200).send("Webhook processed");
 });
 
+// --- START SERVER ---
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
