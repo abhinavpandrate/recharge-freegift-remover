@@ -1,15 +1,22 @@
 import express from "express";
 import bodyParser from "body-parser";
-import fetch from "node-fetch";
 
 const app = express();
 app.use(bodyParser.json());
 
-const API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your Recharge admin token
-const CAP_ID = 56519341375870; // Variant ID of the cap gift
-const BOTTLE_ID = 15659113480574; // Variant ID of the bottle gift
+// ⚠️ REPLACE THIS with your actual Recharge Admin API key
+const API_KEY = process.env.RECHARGE_TOKEN || "sk_2x2_f3e897b9f4560f00457cade62802a795c27e649b4bd453939c2d0712c94bebb9"; 
 
-// Check if subscription is on its first order
+// Hardcoded product variant IDs
+const CAP_ID = 56519341375870; // Cap gift
+const BOTTLE_ID = 15659113480574; // Bottle gift
+
+if (!API_KEY || API_KEY === "sk_test_1234567890abcdef") {
+  console.error("⚠️ ERROR: Missing or placeholder RECHARGE_TOKEN environment variable!");
+  process.exit(1);
+}
+
+// Helper: Check if this is the first subscription order
 async function isFirstOrder(subscriptionId) {
   const response = await fetch(`https://api.rechargeapps.com/subscriptions/${subscriptionId}/orders`, {
     headers: { "X-Recharge-Access-Token": API_KEY },
@@ -28,14 +35,14 @@ app.post("/recharge-webhook", async (req, res) => {
       return res.status(200).send("Not a subscription order");
     }
 
-    // If first order, keep gifts
+    // First order? Keep gifts
     const firstOrder = await isFirstOrder(subscriptionId);
     if (firstOrder) {
       console.log(`Subscription ${subscriptionId} - first order, gifts stay`);
       return res.status(200).send("First order - gifts stay");
     }
 
-    // Find all gift line items in this order
+    // Find gift items in this order
     const giftItems = order.line_items.filter(
       item => item.variant_id === CAP_ID || item.variant_id === BOTTLE_ID
     );
