@@ -1,5 +1,5 @@
 {
-  "name": "recharge-freegift-remover",
+  "name": "recharge-gift-remover",
   "version": "1.0.0",
   "main": "index.js",
   "type": "module",
@@ -8,6 +8,6 @@
   },
   "dependencies": {
     "express": "^4.19.0",
-    "body-parser": "^1.20.2"
+    "node-fetch": "^3.3.2"
   }
 }
