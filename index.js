@@ -6,9 +6,9 @@ const app = express();
 app.use(bodyParser.json());
 
 // --- CONFIG --- //
-const API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; // Replace with your actual Recharge Admin API token
-const CAP_ID = 56519341375870;           // Replace with your free gift CAP variant ID
-const BOTTLE_ID = 15659113480574;        // Replace with your free gift BOTTLE variant ID
+const API_KEY = "RECHARGE_API_KEY_12345"; // Replace with your Recharge Admin API token
+const CAP_ID = 56519341375870;            // Replace with your free gift CAP variant ID
+const BOTTLE_ID = 15659113480574;         // Replace with your free gift BOTTLE variant ID
 
 // In-memory store to track first orders
 const firstOrderGiven = {};
@@ -18,10 +18,18 @@ app.post("/webhook", async (req, res) => {
   try {
     console.log("Webhook payload received:", JSON.stringify(req.body, null, 2));
 
-    const payload = req.body;
-    const subscriptionId = payload.subscription_id;
+    let subscriptionId;
+    let lineItems;
 
-    if (!subscriptionId) {
+    if (req.body.subscription) {
+      // subscription/created webhook
+      subscriptionId = req.body.subscription.id;
+      lineItems = [req.body.subscription]; // wrap as array for consistency
+    } else if (req.body.order) {
+      // order/created webhook
+      subscriptionId = req.body.order.line_items[0]?.subscription_id;
+      lineItems = req.body.order.line_items;
+    } else {
       console.log("Not a subscription order. Ignoring.");
       return res.status(200).send("Not a subscription order");
     }
@@ -34,11 +42,11 @@ app.post("/webhook", async (req, res) => {
     }
 
     // Remove free gift items from renewals
-    const updatedLineItems = payload.line_items.filter(
-      item => item.variant_id !== CAP_ID && item.variant_id !== BOTTLE_ID
+    const updatedLineItems = lineItems.filter(
+      item => item.shopify_variant_id !== CAP_ID && item.shopify_variant_id !== BOTTLE_ID
     );
 
-    if (updatedLineItems.length === payload.line_items.length) {
+    if (updatedLineItems.length === lineItems.length) {
       console.log(`Subscription ${subscriptionId} - no gifts to remove`);
       return res.status(200).send("No gifts to remove");
     }
