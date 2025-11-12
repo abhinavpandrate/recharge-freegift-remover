@@ -5,90 +5,63 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Use environment variables for API keys
-const RECHARGE_API_KEY = process.env.RECHARGE_API_KEY; 
-const SHOPIFY_STORE = process.env.SHOPIFY_STORE; 
-const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
+const SHOPIFY_API_TOKEN = process.env.SHOPIFY_API_TOKEN;
+const RECHARGE_API_KEY = process.env.RECHARGE_API_KEY;
+const TARGET_VARIANT_ID = process.env.TARGET_VARIANT_ID;
 
 app.use(bodyParser.json());
 
 app.post("/webhook", async (req, res) => {
   try {
     const payload = req.body;
+    console.log("Incoming payload:", JSON.stringify(payload, null, 2));
 
-    if (!payload || !payload.line_items || payload.line_items.length === 0) {
-      console.log("No order or line items found in payload.");
+    if (!payload || !payload.line_items) {
       return res.status(400).send({ error: "No line items found" });
     }
 
     const orderId = payload.order_id || payload.id;
-    console.log(`Webhook received for order ${orderId}`);
+    const giftItem = payload.line_items.find(li => String(li.variant_id) === String(TARGET_VARIANT_ID));
 
-    // Loop through line items and remove the gift
-    for (const li of payload.line_items) {
-      // Check if this is the gift variant
-      if (li.variant_id === parseInt(process.env.GIFT_VARIANT_ID)) {
-        console.log(`Found gift variant in order ${orderId}, attempting to remove...`);
-
-        if (!li.subscription_id) {
-          console.log("No subscription_id for this item, cannot remove from Recharge. Skipping.");
-          continue;
-        }
-
-        const subscriptionId = li.subscription_id;
-
-        // Call Recharge API to fetch upcoming charges
-        const upcomingUrl = `https://api.rechargeapps.com/subscriptions/${subscriptionId}/upcoming_charges`;
-
-        try {
-          const response = await fetch(upcomingUrl, {
-            method: "GET",
-            headers: {
-              "X-Recharge-Access-Token": RECHARGE_API_KEY,
-              "Content-Type": "application/json",
-            },
-          });
-
-          const data = await response.json();
-          if (data && data.upcoming_charges && data.upcoming_charges.length > 0) {
-            const upcomingChargeId = data.upcoming_charges[0].id;
-
-            // Remove gift from upcoming order
-            const removeResp = await fetch(`https://api.rechargeapps.com/orders/${upcomingChargeId}`, {
-              method: "PUT",
-              headers: {
-                "X-Recharge-Access-Token": RECHARGE_API_KEY,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                line_items: payload.line_items
-                  .filter(item => item.variant_id !== parseInt(process.env.GIFT_VARIANT_ID))
-                  .map(item => ({
-                    shopify_product_id: item.shopify_product_id,
-                    shopify_variant_id: item.variant_id,
-                    quantity: item.quantity
-                  })),
-              }),
-            });
-
-            const removeData = await removeResp.json();
-            console.log(`Gift removed from upcoming order:`, removeData);
-          } else {
-            console.log(`No upcoming charges found for subscription ${subscriptionId}. Gift cannot be removed yet.`);
-          }
-        } catch (err) {
-          console.error(`Failed to remove gift for subscription ${subscriptionId}:`, err);
-        }
-      }
+    if (!giftItem) {
+      console.log("No free gift found in order.");
+      return res.status(200).send({ message: "No gift to remove" });
     }
 
-    res.status(200).send({ status: "Webhook processed" });
-  } catch (error) {
-    console.error("Error processing webhook:", error);
-    res.status(500).send({ error: "Internal Server Error" });
+    console.log(`🎁 Gift found in order ${orderId}, removing from Shopify...`);
+
+    // Step 1 — Get the full order details from Shopify
+    const orderResponse = await fetch(`https://${SHOPIFY_STORE}/admin/api/2024-10/orders/${orderId}.json`, {
+      headers: { "X-Shopify-Access-Token": SHOPIFY_API_TOKEN },
+    });
+    const orderData = await orderResponse.json();
+
+    // Step 2 — Build updated line items list (excluding the gift)
+    const updatedItems = orderData.order.line_items
+      .filter(item => String(item.variant_id) !== String(TARGET_VARIANT_ID))
+      .map(item => ({
+        id: item.id,
+        quantity: item.quantity,
+      }));
+
+    // Step 3 — Update order via Shopify (to remove gift)
+    const updateResponse = await fetch(`https://${SHOPIFY_STORE}/admin/api/2024-10/orders/${orderId}.json`, {
+      method: "PUT",
+      headers: {
+        "X-Shopify-Access-Token": SHOPIFY_API_TOKEN,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ order: { id: orderId, line_items: updatedItems } }),
+    });
+
+    const result = await updateResponse.json();
+    console.log("✅ Gift removed successfully:", result);
+    res.status(200).send({ success: true });
+  } catch (err) {
+    console.error("Error handling webhook:", err);
+    res.status(500).send({ error: "Server error" });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
