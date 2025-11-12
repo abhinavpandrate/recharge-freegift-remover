@@ -5,13 +5,10 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Get Recharge API key from environment variable
-const RECHARGE_API_KEY = process.env.RECHARGE_API_KEY;
-
-if (!RECHARGE_API_KEY) {
-  console.error("Error: RECHARGE_API_KEY not set in environment variables.");
-  process.exit(1); // Stop the server if key is missing
-}
+// Use environment variables for API keys
+const RECHARGE_API_KEY = process.env.RECHARGE_API_KEY; 
+const SHOPIFY_STORE = process.env.SHOPIFY_STORE; 
+const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 
 app.use(bodyParser.json());
 
@@ -24,17 +21,14 @@ app.post("/webhook", async (req, res) => {
       return res.status(400).send({ error: "No line items found" });
     }
 
-    const orderId = payload.order_id;
-    const subscriptionIds = [
-      ...new Set(payload.line_items.map(li => li.subscription_id).filter(Boolean)),
-    ];
-
+    const orderId = payload.order_id || payload.id;
     console.log(`Webhook received for order ${orderId}`);
-    console.log("Subscriptions in order:", subscriptionIds);
 
+    // Loop through line items and remove the gift
     for (const li of payload.line_items) {
-      if (li.sku === "Styrkr_Cycling_Cap_x1") {
-        console.log(`Found BYOB gift in order ${orderId}, attempting to remove...`);
+      // Check if this is the gift variant
+      if (li.variant_id === parseInt(process.env.GIFT_VARIANT_ID)) {
+        console.log(`Found gift variant in order ${orderId}, attempting to remove...`);
 
         if (!li.subscription_id) {
           console.log("No subscription_id for this item, cannot remove from Recharge. Skipping.");
@@ -43,10 +37,11 @@ app.post("/webhook", async (req, res) => {
 
         const subscriptionId = li.subscription_id;
 
-        try {
-          const url = `https://api.rechargeapps.com/subscriptions/${subscriptionId}/upcoming_charges`;
+        // Call Recharge API to fetch upcoming charges
+        const upcomingUrl = `https://api.rechargeapps.com/subscriptions/${subscriptionId}/upcoming_charges`;
 
-          const response = await fetch(url, {
+        try {
+          const response = await fetch(upcomingUrl, {
             method: "GET",
             headers: {
               "X-Recharge-Access-Token": RECHARGE_API_KEY,
@@ -55,12 +50,10 @@ app.post("/webhook", async (req, res) => {
           });
 
           const data = await response.json();
-
           if (data && data.upcoming_charges && data.upcoming_charges.length > 0) {
-            console.log(`Upcoming charges found for subscription ${subscriptionId}, removing gift...`);
-
             const upcomingChargeId = data.upcoming_charges[0].id;
 
+            // Remove gift from upcoming order
             const removeResp = await fetch(`https://api.rechargeapps.com/orders/${upcomingChargeId}`, {
               method: "PUT",
               headers: {
@@ -69,11 +62,11 @@ app.post("/webhook", async (req, res) => {
               },
               body: JSON.stringify({
                 line_items: payload.line_items
-                  .filter(item => item.sku !== "Styrkr_Cycling_Cap_x1")
+                  .filter(item => item.variant_id !== parseInt(process.env.GIFT_VARIANT_ID))
                   .map(item => ({
                     shopify_product_id: item.shopify_product_id,
-                    shopify_variant_id: item.shopify_variant_id,
-                    quantity: item.quantity,
+                    shopify_variant_id: item.variant_id,
+                    quantity: item.quantity
                   })),
               }),
             });
@@ -81,7 +74,7 @@ app.post("/webhook", async (req, res) => {
             const removeData = await removeResp.json();
             console.log(`Gift removed from upcoming order:`, removeData);
           } else {
-            console.log(`No upcoming charges found for subscription ${subscriptionId}. Gift cannot be removed until order is processed.`);
+            console.log(`No upcoming charges found for subscription ${subscriptionId}. Gift cannot be removed yet.`);
           }
         } catch (err) {
           console.error(`Failed to remove gift for subscription ${subscriptionId}:`, err);
