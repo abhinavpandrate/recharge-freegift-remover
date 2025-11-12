@@ -5,8 +5,13 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Replace with your Recharge API key
-const RECHARGE_API_KEY = ""; 
+// Get Recharge API key from environment variable
+const RECHARGE_API_KEY = process.env.RECHARGE_API_KEY;
+
+if (!RECHARGE_API_KEY) {
+  console.error("Error: RECHARGE_API_KEY not set in environment variables.");
+  process.exit(1); // Stop the server if key is missing
+}
 
 app.use(bodyParser.json());
 
@@ -20,12 +25,13 @@ app.post("/webhook", async (req, res) => {
     }
 
     const orderId = payload.order_id;
-    const subscriptionIds = [...new Set(payload.line_items.map(li => li.subscription_id).filter(Boolean))];
+    const subscriptionIds = [
+      ...new Set(payload.line_items.map(li => li.subscription_id).filter(Boolean)),
+    ];
 
     console.log(`Webhook received for order ${orderId}`);
     console.log("Subscriptions in order:", subscriptionIds);
 
-    // Loop through all line items and remove the BYOB Cycling Cap
     for (const li of payload.line_items) {
       if (li.sku === "Styrkr_Cycling_Cap_x1") {
         console.log(`Found BYOB gift in order ${orderId}, attempting to remove...`);
@@ -37,12 +43,9 @@ app.post("/webhook", async (req, res) => {
 
         const subscriptionId = li.subscription_id;
 
-        // Remove the line item from subscription's next order
-        const url = `https://api.rechargeapps.com/subscriptions/${subscriptionId}/upcoming_charges`;
-
         try {
-          // Note: Recharge API cannot modify draft orders via API for some setups,
-          // so this will attempt to delete the product when the order is queued
+          const url = `https://api.rechargeapps.com/subscriptions/${subscriptionId}/upcoming_charges`;
+
           const response = await fetch(url, {
             method: "GET",
             headers: {
@@ -52,10 +55,10 @@ app.post("/webhook", async (req, res) => {
           });
 
           const data = await response.json();
+
           if (data && data.upcoming_charges && data.upcoming_charges.length > 0) {
             console.log(`Upcoming charges found for subscription ${subscriptionId}, removing gift...`);
 
-            // Assuming the first upcoming charge (simplified)
             const upcomingChargeId = data.upcoming_charges[0].id;
 
             const removeResp = await fetch(`https://api.rechargeapps.com/orders/${upcomingChargeId}`, {
@@ -70,7 +73,7 @@ app.post("/webhook", async (req, res) => {
                   .map(item => ({
                     shopify_product_id: item.shopify_product_id,
                     shopify_variant_id: item.shopify_variant_id,
-                    quantity: item.quantity
+                    quantity: item.quantity,
                   })),
               }),
             });
