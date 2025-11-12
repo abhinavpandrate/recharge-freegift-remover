@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Replace with your Recharge API key
-const RECHARGE_API_KEY = "sk_2x2_1b3d003b0c25cff897dc8bc261cd12f9cc048a0a3244c782e9f466542ba629fc"; 
+const RECHARGE_API_KEY = ""; 
 
 app.use(bodyParser.json());
 
