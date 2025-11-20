@@ -1,131 +1,91 @@
-import express from 'express';
-import bodyParser from 'body-parser';
-import fetch from 'node-fetch';
+import express from "express";
+import axios from "axios";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+app.use(express.json());
 
-// Environment variables must be set on the Render service
-const RECHARGE_API_KEY = process.env.RECHARGE_API_KEY;
-const TARGET_VARIANT_SKUS_STRING = process.env.TARGET_VARIANT_SKUS;
+const SHOP = process.env.SHOPIFY_SHOP;
+const TOKEN = process.env.SHOPIFY_ADMIN;
 
-if (!RECHARGE_API_KEY || !TARGET_VARIANT_SKUS_STRING) {
-    console.error("Missing required environment variables: RECHARGE_API_KEY or TARGET_VARIANT_SKUS.");
+async function shopify(query) {
+  return axios.post(
+    `https://${SHOP}/admin/api/2024-04/graphql.json`,
+    { query },
+    {
+      headers: {
+        "X-Shopify-Access-Token": TOKEN,
+        "Content-Type": "application/json"
+      }
+    }
+  );
 }
 
-const TARGET_VARIANT_SKUS = TARGET_VARIANT_SKUS_STRING ? TARGET_VARIANT_SKUS_STRING.split(',') : [];
+// Extract pack size from variant option "6 Pack"
+function extractPackSize(options) {
+  for (const opt of options) {
+    const match = opt.value.match(/(\d+)\s*pack/i);
+    if (match) return parseInt(match[1], 10);
+  }
+  return 1;
+}
 
-app.use(bodyParser.json());
+app.post("/correct-stock", async (req, res) => {
+  try {
+    const { order_id, items } = req.body;
 
-app.post('/webhook', async (req, res) => {
-    try {
-        const payload = req.body;
-        console.log('--- Incoming Payload Received ---');
-        
-        // 1. Safely find the subscription ID and line items based on common webhook structures
-        const subscriptionId = payload.subscription_id || 
-                                (payload.charge && payload.charge.subscription_id) ||
-                                (payload.order && payload.order.subscription_id);
+    // Find the line item for the test SKU
+    const item = items.find(i => i.sku === "BAR123"); // <-- your SKU
 
-        const lineItems = payload.line_items || 
-                          (payload.charge && payload.charge.line_items) ||
-                          (payload.order && payload.order.line_items);
+    if (!item) return res.status(200).send("Not target SKU");
 
-        if (!subscriptionId || !lineItems || lineItems.length === 0) {
-            console.log('--- Payload Check Failed ---');
-            console.log('Could not find subscription ID or line items in expected locations.');
-            console.log('Dumping payload structure for debugging:');
-            console.log(JSON.stringify(payload, null, 2));
-            console.log('--- End Debug Dump ---');
-            return res.status(400).send({ error: 'Invalid webhook structure' });
+    // Extract pack size from variant options
+    const pack = extractPackSize(item.variant_options);
+
+    const extraQty = pack - 1;
+    if (extraQty <= 0) return res.status(200).send("No correction needed");
+
+    const variantId = item.variant_id; // same SKU
+
+    // Begin edit
+    const begin = await shopify(`
+      mutation {
+        orderEditBegin(orderId: "gid://shopify/Order/${order_id}") {
+          calculatedOrder { id }
+          userErrors { message }
         }
+      }
+    `);
 
-        // We now have subscriptionId and lineItems to work with.
-        
-        // 2. Check if the target item is in the current order payload
-        const giftItem = lineItems.find(
-            li => TARGET_VARIANT_SKUS.includes(String(li.sku))
-        );
+    const editId = begin.data.data.orderEditBegin.calculatedOrder.id;
 
-        if (!giftItem) {
-            console.log('No target gift item found in order. Exiting.')
-            return res.status(200).send({ message: 'No gift to remove' })
+    // Add extra qty
+    await shopify(`
+      mutation {
+        orderEditAddVariant(
+          id: "${editId}",
+          variantId: "gid://shopify/ProductVariant/${variantId}",
+          quantity: ${extraQty}
+        ) {
+          userErrors { message }
         }
+      }
+    `);
 
-        // 3. Fetch the subscription contract from ReCharge
-        const subResponse = await fetch(`https://api.rechargeapps.com/subscriptions/${subscriptionId}`, {
-            headers: {
-                'X-Recharge-Access-Token': RECHARGE_API_KEY,
-                'Content-Type': 'application/json',
-            },
-        });
-        
-        if (!subResponse.ok) {
-            const errorText = await subResponse.text();
-            console.error(`Error fetching ReCharge subscription ${subscriptionId}: ${subResponse.status} ${errorText}`);
-            return res.status(500).send({ error: `Failed to fetch subscription: ${subResponse.status}` });
+    // Commit changes
+    await shopify(`
+      mutation {
+        orderEditCommit(id: "${editId}") {
+          order { id }
+          userErrors { message }
         }
+      }
+    `);
 
-        const subData = await subResponse.json();
-        const subscription = subData.subscription;
-        const orderCount = subscription.order_count;
-
-        // 4. Check if it's the first order (where the gift should be included)
-        if (orderCount <= 1) {
-            console.log('First order, gift is allowed. Exiting.');
-            return res.status(200).send({ message: 'First order, gift kept' });
-        }
-
-        console.log(`Recurring order detected (order #${orderCount}). Attempting to remove gift from ReCharge Subscription ${subscriptionId}...`);
-
-        // 5. Filter out the gift item(s) from the existing subscription contract line items
-        const updatedLineItems = subscription.line_items.filter(li => {
-            return !TARGET_VARIANT_SKUS.includes(String(li.sku));
-        });
-
-        // Check if any line items were actually removed
-        if (updatedLineItems.length === subscription.line_items.length) {
-            console.log('Gift item was not found in the subscription contract or was already removed. No update needed.');
-            return res.status(200).send({ message: 'Gift already removed from contract or SKU mismatch' });
-        }
-        
-        // 6. Update the ReCharge Subscription Contract via PUT request
-        const updateSubResponse = await fetch(`https://api.rechargeapps.com/subscriptions/${subscriptionId}`, {
-            method: 'PUT',
-            headers: {
-                'X-Recharge-Access-Token': RECHARGE_API_KEY,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                subscription: {
-                    line_items: updatedLineItems,
-                },
-            }),
-        });
-
-        // --- CRITICAL DEBUGGING SECTION ---
-        if (!updateSubResponse.ok) {
-            const status = updateSubResponse.status;
-            const errorBody = await updateSubResponse.text(); 
-            
-            console.error('--- CRITICAL FAILURE: ReCharge PUT update failed ---');
-            console.error(`Status: ${status}`);
-            console.error(`Response Body: ${errorBody}`);
-            
-            return res.status(500).send({ error: `ReCharge update failed (Status: ${status})` });
-        }
-        // ------------------------------------
-
-        const updateSubResult = await updateSubResponse.json();
-
-        console.log('✅ Gift permanently removed from ReCharge subscription contract successfully.');
-        console.log('--- Process Complete ---');
-        res.status(200).send({ success: true, message: 'Gift removed from future renewals' });
-
-    } catch (err) {
-        console.error('An unexpected error occurred while handling webhook:', err);
-        res.status(500).send({ error: 'Server error' });
-    }
+    res.send("Stock corrected");
+  } catch (err) {
+    console.error(err.response?.data || err);
+    res.status(500).send("Error");
+  }
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(3000, () => console.log("Running"));
