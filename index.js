@@ -1,91 +1,39 @@
 import express from "express";
-import axios from "axios";
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 3000;
+app.use(bodyParser.json());
 
-const SHOP = process.env.SHOPIFY_SHOP;
-const TOKEN = process.env.SHOPIFY_ADMIN;
+// Example mapping of pack types
+const packMultipliers = {
+  "1-pack": 1,
+  "3-pack": 3,
+  "6-pack": 6,
+  "12-pack": 12
+};
 
-async function shopify(query) {
-  return axios.post(
-    `https://${SHOP}/admin/api/2024-04/graphql.json`,
-    { query },
-    {
-      headers: {
-        "X-Shopify-Access-Token": TOKEN,
-        "Content-Type": "application/json"
-      }
+app.post("/webhook", async (req, res) => {
+  const order = req.body;
+  
+  console.log("Order received:", order.id);
+
+  for (let item of order.line_items) {
+    if (item.sku === "EFP_Styrkr_Bar30_D&A_x1_UK") {
+      // Determine quantity multiplier based on variant title
+      const multiplier = packMultipliers[item.title.toLowerCase()] || 1;
+      const actualQuantity = item.quantity * multiplier;
+
+      console.log(`Item: ${item.title}, original qty: ${item.quantity}, multiplied qty: ${actualQuantity}`);
+
+      // Optional: send to Shopify to create a new fulfilled line item OR trigger NS sync
+      // Shopify API: create new line item with 0 price if needed
+      // fetch("https://{shop}.myshopify.com/admin/api/2025-10/orders/{order_id}/fulfillments.json", {...})
     }
-  );
-}
-
-// Extract pack size from variant option "6 Pack"
-function extractPackSize(options) {
-  for (const opt of options) {
-    const match = opt.value.match(/(\d+)\s*pack/i);
-    if (match) return parseInt(match[1], 10);
   }
-  return 1;
-}
 
-app.post("/correct-stock", async (req, res) => {
-  try {
-    const { order_id, items } = req.body;
-
-    // Find the line item for the test SKU
-    const item = items.find(i => i.sku === "BAR123"); // <-- your SKU
-
-    if (!item) return res.status(200).send("Not target SKU");
-
-    // Extract pack size from variant options
-    const pack = extractPackSize(item.variant_options);
-
-    const extraQty = pack - 1;
-    if (extraQty <= 0) return res.status(200).send("No correction needed");
-
-    const variantId = item.variant_id; // same SKU
-
-    // Begin edit
-    const begin = await shopify(`
-      mutation {
-        orderEditBegin(orderId: "gid://shopify/Order/${order_id}") {
-          calculatedOrder { id }
-          userErrors { message }
-        }
-      }
-    `);
-
-    const editId = begin.data.data.orderEditBegin.calculatedOrder.id;
-
-    // Add extra qty
-    await shopify(`
-      mutation {
-        orderEditAddVariant(
-          id: "${editId}",
-          variantId: "gid://shopify/ProductVariant/${variantId}",
-          quantity: ${extraQty}
-        ) {
-          userErrors { message }
-        }
-      }
-    `);
-
-    // Commit changes
-    await shopify(`
-      mutation {
-        orderEditCommit(id: "${editId}") {
-          order { id }
-          userErrors { message }
-        }
-      }
-    `);
-
-    res.send("Stock corrected");
-  } catch (err) {
-    console.error(err.response?.data || err);
-    res.status(500).send("Error");
-  }
+  res.status(200).send("Webhook processed");
 });
 
-app.listen(3000, () => console.log("Running"));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
